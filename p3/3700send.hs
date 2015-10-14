@@ -9,18 +9,18 @@ import Control.Concurrent
 
 data SType = Syn | SynAck | Ack | Fin deriving (Show, Read)
 
-data CState = Closed | Listen | SynSent | SynReceived | Established
+data CState = Close | Listen | SynSent | SynReceived | Established
 
 data Seg = Empty | Full {
   stype :: SType,
   seqnum :: Int,
   acknum :: Int,
   dat :: String
-} deriving Show
+}
 
 instance Show Seg where
   show Empty = ""
-  show (Seg t s a d) = unwords [(show t), (show s), (show a), d]
+  show (Full t s a d) = unwords [(show t), (show s), (show a), d]
 
 data Client = Client {
   buffer :: [(Seg, UTCTime)],
@@ -59,7 +59,7 @@ talk :: Client -> Socket -> Chan String -> IO ()
 talk client s received =
   do
     line <- getLine
-    let client = addToBuffer client line
+    --let client = addToBuffer client line
     -- sendMe <- whatToSend (cstate client) line
     timestamp $ "[send data] " ++ line
     send s line
@@ -68,16 +68,16 @@ talk client s received =
       response <- readChan received
       timestamp "[revc ack] todo"
     eof <- isEOF
-    unless eof $ talk s received
+    unless eof $ talk client s received
 
 gogo :: Socket -> IO ()
 gogo s =
   do
-    let client = Client [] Closed
+    let client = Client [] Close
     received <- newChan
     receiving <- forkIO $ receive s received
-    let init = serializeSeg $ Seg Syn 0 0 ""
-    send s line
+    let init = show $ Full Syn 0 0 ""
+    -- send s received
     timestamp $ "[send syn] "
     talk client s received
 
