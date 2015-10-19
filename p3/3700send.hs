@@ -34,7 +34,7 @@ data Client = Client {
   cstate :: CState,
   lastSeq :: Int,
   lastAck :: Int,
-  message :: Maybe Seg
+  messages :: [Seg]
 } deriving Show
 
 ---- Segment Functions
@@ -46,8 +46,8 @@ parseSeg seg = Seg (read (splitUp!!0)) (read (splitUp!!1)) (read (splitUp!!2)) "
 ---- Client Functions
 
 stepClient :: Client -> Maybe String -> Maybe (String, UTCTime) -> Client
-stepClient c mServer (Just (mStdin, _)) = c { message = (Just $ Seg Data 0 0 mStdin) }
-stepClient c _ _ = c { message = Nothing }
+stepClient c mServer (Just (mStdin, _)) = c { messages = [Seg Data 0 0 mStdin] }
+stepClient c _ _ = c { messages = [] }
 
 isClosed :: Client -> Bool
 isClosed (Client _ Close _ _ _) = True
@@ -55,8 +55,8 @@ isClosed _ = False
 
 -- prepend the segment to our buffer, with a timestamp
 addToBuffer :: Client -> String -> UTCTime -> Client
-addToBuffer (Client buffer state lastSeq lastAck message) s time =
-    Client ((newSeg, time):buffer) state newSeq newAck message
+addToBuffer (Client buffer state lastSeq lastAck messages) s time =
+    Client ((newSeg, time):buffer) state newSeq newAck messages
         where newSeq = lastSeq + 1
               newAck = lastAck + 1
               newSeg = Seg Data newSeq newAck s
@@ -116,8 +116,7 @@ clientLoop c fromServer fromStdin toServer =
     serverMessage <- tryGet fromServer
     stdinMessage <- tryGet fromStdin
     let nextClient = stepClient c serverMessage stdinMessage
-        sendMe = message nextClient
-    unless (isNothing sendMe) $ writeChan toServer (fromJust sendMe)
+    mapM (writeChan toServer) $ messages nextClient
     unless (isClosed nextClient) $ clientLoop nextClient fromServer fromStdin toServer
 
 readStdin :: Socket -> Chan (String, UTCTime) -> IO ()
@@ -148,7 +147,7 @@ startAndSyn s =
     sending <- forkIO $ sendToServer s toServer
     reading <- forkIO $ readStdin s fromStdin
     let init = show $ Seg Syn 0 0 ""
-        client = Client [] SynSent 0 0 Nothing
+        client = Client [] SynSent 0 0 []
     send s init
     timestamp $ "[send syn] "
     clientLoop client fromServer fromStdin toServer
