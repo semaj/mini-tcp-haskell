@@ -22,7 +22,6 @@ timestamp s =
     t <- getCurrentTime
     hPutStrLn stderr $ "<" ++ (show t) ++ "> " ++ s
 
-
 main :: IO ()
 main =
   do

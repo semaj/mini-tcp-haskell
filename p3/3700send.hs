@@ -2,37 +2,77 @@ module Main where
 import Control.Monad (unless, forever)
 import Network.Socket
 import Data.Time
+import Data.Maybe
+import Data.List.Split
 import Control.Exception
 import System.IO
 import System.Environment
 import Control.Concurrent
 
-data SType = Syn | SynAck | Ack | Fin deriving (Show, Read)
+---- Constants
 
-data CState = Close | Listen | SynSent | SynReceived | Established
+segmentSize = 50
 
-data Seg = Empty | Full {
-  stype :: SType,
-  seqnum :: Int,
-  acknum :: Int,
+---- Data
+
+data Type = Syn | SynAck | Data | Ack | Fin deriving (Show, Read)
+
+data CState = Close | Listen | SynSent | SynReceived | Established deriving (Show, Eq)
+
+data Seg = Empty | Seg {
+  segtype :: Type,
+  segseqnum :: Int,
+  segacknum :: Int,
   dat :: String
 }
 
 instance Show Seg where
-  show Empty = ""
-  show (Full t s a d) = unwords [(show t), (show s), (show a), d]
+  show (Seg t s a d) = unwords [(show t), (show s), (show a), d]
 
 data Client = Client {
   buffer :: [(Seg, UTCTime)],
-  cstate :: CState
-}
+  cstate :: CState,
+  lastSeq :: Int,
+  lastAck :: Int,
+  message :: Maybe Seg
+} deriving Show
 
--- whatToSend :: CState -> String -> Segment
--- whatToSend Closed _ = Empty
--- whatToSend Listen _ = Empty
--- whatToSend
+---- Segment Functions
 
--- Messy monad stuffs
+parseSeg :: String -> Seg
+parseSeg seg = Seg (read (splitUp!!0)) (read (splitUp!!1)) (read (splitUp!!2)) ""
+    where splitUp = words seg
+
+---- Client Functions
+
+stepClient :: Client -> Maybe String -> Maybe (String, UTCTime) -> Client
+stepClient c mServer (Just (mStdin, _)) = c { message = (Just $ Seg Data 0 0 mStdin) }
+stepClient c _ _ = c { message = Nothing }
+
+isClosed :: Client -> Bool
+isClosed (Client _ Close _ _ _) = True
+isClosed _ = False
+
+-- prepend the segment to our buffer, with a timestamp
+addToBuffer :: Client -> String -> UTCTime -> Client
+addToBuffer (Client buffer state lastSeq lastAck message) s time =
+    Client ((newSeg, time):buffer) state newSeq newAck message
+        where newSeq = lastSeq + 1
+              newAck = lastAck + 1
+              newSeg = Seg Data newSeq newAck s
+
+---- Monads / Sockets
+
+-- Helpers
+
+tryGet :: Chan a -> IO (Maybe a)
+tryGet chan = do
+  empty <- isEmptyChan chan
+  if empty then
+     return Nothing
+   else do
+     response <- readChan chan
+     return $ Just response
 
 timestamp :: String -> IO ()
 timestamp s =
@@ -48,44 +88,78 @@ getSocket host port =
     connect s (addrAddress serveraddr)
     return s
 
-receive :: Socket -> Chan String -> IO ()
-receive s received =
-  do
-    fromServer <- recv s 1024
-    timestamp "[revc SOMETHING] todo"
-    writeChan received fromServer
+-- Forked IO functions, continuously running
 
-talk :: Client -> Socket -> Chan String -> IO ()
-talk client s received =
+receiveFromServer :: Socket -> Chan String -> IO ()
+receiveFromServer s fromServer = do
+  forever $ do
+    message <- recv s 1024
+    -- parsing the message should occur here
+    timestamp "[recv ack] offset goes here"
+    writeChan fromServer message
+
+sendToServer :: Socket -> Chan Seg -> IO ()
+sendToServer s toServer = do
+  forever $ do
+    segment <- readChan toServer
+    -- pulling offset
+    send s $ dat segment
+    timestamp "[send data] todo"
+
+clientLoop :: Client
+              -> Chan String
+              -> Chan (String, UTCTime)
+              -> Chan Seg
+              -> IO ()
+clientLoop c fromServer fromStdin toServer =
   do
-    line <- getLine
-    --let client = addToBuffer client line
-    -- sendMe <- whatToSend (cstate client) line
-    timestamp $ "[send data] " ++ line
-    send s line
-    isEmpty <- isEmptyChan received
-    unless isEmpty $ do
-      response <- readChan received
-      timestamp "[revc ack] todo"
+    serverMessage <- tryGet fromServer
+    stdinMessage <- tryGet fromStdin
+    let nextClient = stepClient c serverMessage stdinMessage
+        sendMe = message nextClient
+    unless (isNothing sendMe) $ writeChan toServer (fromJust sendMe)
+    unless (isClosed nextClient) $ clientLoop nextClient fromServer fromStdin toServer
+
+readStdin :: Socket -> Chan (String, UTCTime) -> IO ()
+readStdin s fromStdin =
+  forever $ do
     eof <- isEOF
-    unless eof $ talk client s received
+    time <- getCurrentTime
+    if eof then
+      writeChan fromStdin ("#EOF#", time)
+      else do
+        line <- getLine
+        let pieces = map (\ x -> (x, time)) $ chunksOf segmentSize line
+        mapM (writeChan fromStdin) pieces
+        return ()
 
-gogo :: Socket -> IO ()
-gogo s =
+---- Initialization
+
+-- Initial run function. Sends syn (for now),
+-- initiates channels, starts reading/writing loops, starts client loop
+
+startAndSyn :: Socket -> IO ()
+startAndSyn s =
   do
-    let client = Client [] Close
-    received <- newChan
-    receiving <- forkIO $ receive s received
-    let init = show $ Full Syn 0 0 ""
-    -- send s received
+    fromServer <- newChan
+    fromStdin <- newChan
+    toServer <- newChan
+    receiving <- forkIO $ receiveFromServer s fromServer
+    sending <- forkIO $ sendToServer s toServer
+    reading <- forkIO $ readStdin s fromStdin
+    let init = show $ Seg Syn 0 0 ""
+        client = Client [] SynSent 0 0 Nothing
+    send s init
     timestamp $ "[send syn] "
-    talk client s received
+    clientLoop client fromServer fromStdin toServer
+
+-- Build the socket, run startAndSyn
 
 main :: IO ()
 main = do
     args <- getArgs
     let
-      splitMe = words $ map (\ x -> if x == ':' then ' ' else x) (args!!0)
+      splitMe = splitOn ":" (args!!0)
       host = (splitMe!!0)
       port = (splitMe!!1)
-    withSocketsDo $ bracket (getSocket host port) sClose gogo
+    withSocketsDo $ bracket (getSocket host port) sClose startAndSyn
