@@ -64,16 +64,18 @@ main =
 handler :: Server -> Socket -> IO ()
 handler server conn = do
     (msg,n,d) <- recvFrom conn 1024
-    timestamp $ "[recv data] " ++ msg
+    --timestamp $ "[recv data] " ++ msg
     --when (msg == "#EOF") $ exitSuccess
     let mSeg = parseSeg (Just msg)
         nextServer = stepServer server mSeg
     -- putStrLn $ msg
     -- putStrLn $ show mSeg
+    mapM putStr (map dat (toPrint nextServer))
+    let emptiedToPrint = nextServer { toPrint = [] }
     unless (isNothing mSeg) $ do
       let ack = getAck $ fromJust mSeg
-      putStrLn $ show ack
+      -- putStrLn $ show ack
       sendTo conn ack d
       return ()
-    handler nextServer conn
+    handler emptiedToPrint conn
     --unless (null msg) $ sendTo conn "ACK" d >> handler conn
