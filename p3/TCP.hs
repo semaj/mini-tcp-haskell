@@ -9,7 +9,7 @@ import Data.List
 ---- Constants
 
 splitter = "|"
-mss = 500
+-- mss = 500
 segmentExpiryTime :: Float
 segmentExpiryTime = 0.5 -- sec
 
@@ -17,13 +17,12 @@ segmentExpiryTime = 0.5 -- sec
 
 data Type = Data | Ack | Fin deriving (Read, Eq)
 
-  -- Is this even necessary? Ack isn't.
 instance Show Type where
   show Data = "0"
   show Ack = "1"
   show Fin = "2"
 
-data CState = Close | Established deriving (Show, Eq)
+data CState = Finishing | Close | Established deriving (Show, Eq)
 
 data Seg = Seg {
   stype :: Type,
@@ -81,7 +80,13 @@ parseSeg (Just seg) -- = Seg (read (splitUp!!0)) (read (splitUp!!1)) (read (spli
           parsedSeq = readMaybe (splitUp!!1)
 
 
-  ---- Client Functions
+---- Client Functions
+
+isDoneSending :: Client -> Bool
+isDoneSending c = finishing && emptyUnacked && emptyToSend
+      where emptyUnacked = 0 == (length $ (unacked c))
+            emptyToSend = 0 == (length $ (toSend c))
+            finishing = (cstate c) == Finishing
 
 stepClient :: Client -> UTCTime -> Maybe Seg -> Maybe String -> Client
 stepClient c now fromServer fromStdin = (sendUnsent (retry (addToUnsent (recAck c fromServer) fromStdin) now) now)
@@ -94,6 +99,7 @@ isExpired d now (_, old) = (segmentExpiryTime * d) > (realToFrac (abs $ diffUTCT
 
 recAck :: Client -> Maybe Seg -> Client
 recAck c Nothing = c
+recAck c@(Client Finishing _ _ _ _ _ _ _) (Just (Seg Fin _ _ _)) = c { cstate = Close }
 recAck c (Just (Seg _ num _ _)) = c { unacked = newUnacked, lastAcked = (max (lastAcked c) num) }
     where newUnacked = filter (\(s,t) -> (seqNum s) /= num) (unacked c)
 
@@ -115,7 +121,9 @@ retry client@(Client _ uacked _ tosend _ _ delta _) now = client { unacked = upd
 
 addToUnsent :: Client -> Maybe String -> Client
 addToUnsent c Nothing = c
-addToUnsent c (Just s) = c { unsent = (unsent c) ++ [newSeg], lastRead = newlastread }
+addToUnsent c (Just s)
+  | s == "#EOF#" = c { cstate = Finishing }
+  | otherwise = c { unsent = (unsent c) ++ [newSeg], lastRead = newlastread }
     where newlastread = (lastRead c) + 1
           newSeg = hashSeg $ Seg Data newlastread s "NOHASHYET"
 

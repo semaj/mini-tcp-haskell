@@ -18,13 +18,11 @@ import System.Exit
 sendServer :: Socket -> Seg -> IO ()
 sendServer socket seg =
   do
+    connected <- isWritable socket
+    when connected $ do
     -- splitting should occur
-    send socket $ show seg
-    timestamp "[send data] todo"
-
-isDone :: Maybe String -> Bool
-isDone (Just "#EOF#") = True
-isDone _ = False
+      send socket $ show seg
+      timestamp "[send data] todo"
 
 timestamp :: String -> IO ()
 timestamp s =
@@ -45,9 +43,11 @@ getSocket host port =
 receiveFromServer :: Socket -> Chan String -> IO ()
 receiveFromServer s fromServer = do
   forever $ do
+    connected <- isReadable s
+    unless connected $ exitSuccess
     message <- recv s 1024
     -- parsing the message should occur here
-    putStrLn message
+    -- putStrLn message
     timestamp "[recv ack] offset goes here"
     writeChan fromServer message
 
@@ -65,24 +65,38 @@ clientLoop c s fromServer fromStdin =
     serverMessage <- tryGet fromServer
     stdinMessage <- tryGet fromStdin
     now <- getCurrentTime
-    let stdinIsDone = isDone stdinMessage
-        nextClient = stepClient c now (parseSeg serverMessage) stdinMessage
-    -- the isDone message should trigger closing of the client
+    let nextClient = stepClient c now (parseSeg serverMessage) stdinMessage
     mapM (sendServer s) $ toSend nextClient
     let emptiedToSend = nextClient { toSend = [] }
-    putStrLn $ show emptiedToSend
-    when (isClosed nextClient) $ exitSuccess
+    when (isDoneSending emptiedToSend) $ do
+      let fin = hashSeg $ Seg Fin (-1) "" ""
+      finishUp (emptiedToSend { unsent = [fin] }) s fromServer
+      exitSuccess
+    --putStrLn $ show emptiedToSend
+    --when (isClosed emptiedToSend && 0 == (length $ unacked emptiedToSend) $ exitSuccess
     clientLoop emptiedToSend s fromServer fromStdin
+
+finishUp :: Client -> Socket -> Chan String -> IO ()
+finishUp c s fromServer =
+  do
+    serverMessage <- tryGet fromServer
+    now <- getCurrentTime
+    let nextClient = stepClient c now (parseSeg serverMessage) Nothing
+    unless ((cstate nextClient) == Close) $ do
+      mapM (sendServer s) $ toSend nextClient
+      let emptiedToSend = nextClient { toSend = [] }
+      finishUp emptiedToSend s fromServer
 
 readStdin :: Socket -> Chan String -> IO ()
 readStdin s fromStdin =
   do
+    line <- getLine
     eof <- isEOF
-    if eof then
+    if eof then do
+      writeChan fromStdin line
       writeChan fromStdin "#EOF#"
       else do
-        line <- getLine
-        writeChan fromStdin line
+        writeChan fromStdin (line ++ "\n")
         -- let pieces = chunksOf mss line
         -- mapM (writeChan fromStdin) pieces
         readStdin s fromStdin
