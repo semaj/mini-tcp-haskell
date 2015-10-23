@@ -1,6 +1,6 @@
 module Main where
 import TCP
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, forever)
 import System.Exit
 import System.IO
 import Network.Socket
@@ -8,23 +8,25 @@ import Control.Exception
 import System.Random
 import Data.Time.Clock
 import Data.List
+import Control.Concurrent
 import Data.Maybe
 
 data Server = Server {
   toPrint :: [Seg],
   buffer :: [Seg],
-  lastSeqPrinted :: Int
+  lastSeqPrinted :: Int,
+  sockaddr :: SockAddr
 }
 
 whatToPrint :: Server -> Server
-whatToPrint s@(Server toprint buff lastseq) = newS printMe
+whatToPrint s@(Server toprint buff lastseq sa) = newS printMe
     where printMe = find (\x -> (seqNum x) == (lastseq + 1)) buff
           newS Nothing = s
-          newS (Just a) = Server (toprint ++ [a]) (delete a buff) (lastseq + 1)
+          newS (Just a) = Server (toprint ++ [a]) (delete a buff) (lastseq + 1) sa
 
 addToBuffer :: Server -> Maybe Seg -> Server
 addToBuffer s Nothing = s
-addToBuffer s@(Server _ buff _) (Just seg@(Seg _ n _ _)) = if (any (\x -> (seqNum x) == n) buff)
+addToBuffer s@(Server _ buff _ _) (Just seg@(Seg _ n _ _)) = if (any (\x -> (seqNum x) == n) buff)
                                                            then s
                                                            else s { buffer = (buff ++ [seg]) }
 
@@ -50,6 +52,14 @@ timestamp s =
     t <- getCurrentTime
     hPutStrLn stderr $ "<" ++ (show t) ++ "> " ++ s
 
+receiveFromClient :: Socket -> Chan (String, SockAddr) -> IO ()
+receiveFromClient s segs = do
+  forever $ do
+    (msg,n,d) <- recvFrom s 1024
+    --timestamp $ "[recv data] " ++ msg
+    writeChan segs (msg, d)
+
+
 main :: IO ()
 main =
   do
@@ -57,25 +67,32 @@ main =
     hSetBuffering stderr NoBuffering
     r <- getStdRandom $ randomR (1024, 65535)
     let rS = show (r :: Int)
-        server = Server [] [] 0
     timestamp $ "[bound] " ++ rS
-    withSocketsDo $ bracket (connectMe rS) sClose (handler server)
+    withSocketsDo $ bracket (connectMe rS) sClose initialize
 
-handler :: Server -> Socket -> IO ()
-handler server conn = do
-    (msg,n,d) <- recvFrom conn 1024
-    --timestamp $ "[recv data] " ++ msg
+initialize :: Socket -> IO ()
+initialize conn = do
+  receiving <- newChan
+  forkIO $ receiveFromClient conn receiving
+  let server = Server [] [] 0 (SockAddrUnix "huh")
+  handler server receiving conn
+
+handler :: Server -> Chan (String, SockAddr) -> Socket -> IO ()
+handler server fromClient conn = do
+    msg <- tryGet fromClient
+
+    let (fromC,sa) = if (isNothing msg) then (Nothing,(sockaddr server)) else (Just (fst $ fromJust msg),(snd $ fromJust msg))
     --when (msg == "#EOF") $ exitSuccess
-    let mSeg = parseSeg (Just msg)
+    let mSeg = parseSeg fromC
         nextServer = stepServer server mSeg
     -- putStrLn $ msg
     -- putStrLn $ show mSeg
     mapM putStr (map dat (toPrint nextServer))
-    let emptiedToPrint = nextServer { toPrint = [] }
+    let emptiedToPrint = nextServer { toPrint = [], sockaddr = sa }
     unless (isNothing mSeg) $ do
       let ack = getAck $ fromJust mSeg
       -- putStrLn $ show ack
-      sendTo conn ack d
+      sendTo conn ack sa
       return ()
-    handler emptiedToPrint conn
+    handler emptiedToPrint fromClient conn
     --unless (null msg) $ sendTo conn "ACK" d >> handler conn

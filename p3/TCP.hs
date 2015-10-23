@@ -1,5 +1,6 @@
 module TCP where
 import Data.Hashable
+import Control.Concurrent
 import Data.Time
 import Data.Maybe
 import Data.List.Split
@@ -83,7 +84,7 @@ parseSeg (Just seg) -- = Seg (read (splitUp!!0)) (read (splitUp!!1)) (read (spli
   ---- Client Functions
 
 stepClient :: Client -> UTCTime -> Maybe Seg -> Maybe String -> Client
-stepClient c now fromServer fromStdin = (sendUnsent (addToUnsent (recAck c fromServer) fromStdin) now)
+stepClient c now fromServer fromStdin = (sendUnsent (retry (addToUnsent (recAck c fromServer) fromStdin) now) now)
 
 isClosed :: Client -> Bool
 isClosed c = (cstate c) == Close
@@ -118,8 +119,18 @@ addToUnsent c (Just s) = c { unsent = (unsent c) ++ [newSeg], lastRead = newlast
     where newlastread = (lastRead c) + 1
           newSeg = hashSeg $ Seg Data newlastread s "NOHASHYET"
 
+-- Monady stuff
 
 readMaybe :: Read a => String -> Maybe a
 readMaybe s = case reads s of
                   [(val, "")] -> Just val
                   _           -> Nothing
+
+tryGet :: Chan a -> IO (Maybe a)
+tryGet chan = do
+  empty <- isEmptyChan chan
+  if empty then
+    return Nothing
+  else do
+    response <- readChan chan
+    return $ Just response

@@ -26,15 +26,6 @@ isDone :: Maybe String -> Bool
 isDone (Just "#EOF#") = True
 isDone _ = False
 
-tryGet :: Chan a -> IO (Maybe a)
-tryGet chan = do
-  empty <- isEmptyChan chan
-  if empty then
-     return Nothing
-   else do
-     response <- readChan chan
-     return $ Just response
-
 timestamp :: String -> IO ()
 timestamp s =
   do
