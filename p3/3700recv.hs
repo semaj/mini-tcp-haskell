@@ -89,12 +89,10 @@ handler server fromClient conn =
 
     -- gross
     let (fromC,sa) = if (isNothing msg) then (Nothing,(sockaddr server)) else (Just (fst $ fromJust msg),(snd $ fromJust msg))
-    --when (msg == "#EOF") $ exitSuccess
     let mSeg = parseSeg fromC
         nextServer = stepServer server mSeg
 
     when ((sstate nextServer) == SClose) $ do
-      -- putStrLn $ show $ buffer nextServer
       mapM putStr $ map dat $ toPrint nextServer
       let ack = show $ hashSeg $ Seg Fin (-1) "" ""
       sendTo conn ack sa
