@@ -10,9 +10,10 @@ import Data.List
 
 splitter = "|"
 packetSplitter = "*"
+timeoutCThresh = 3
 
 segmentExpiryTime :: Float
-segmentExpiryTime = 1.0 -- sec
+segmentExpiryTime = 0.8 -- sec
 
 ---- Data
 

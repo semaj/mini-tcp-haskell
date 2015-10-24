@@ -25,7 +25,7 @@ data Client = Client {
   lastRead :: Int, -- last seq number read from stdin
   lastAcked :: Int, -- last seq num acked. if delta between this and any unacked packets is high, just resend those packets (or decrease the timeout)
   timeoutM :: Float, -- modifier (multiplicative) (how long to wait before something times out), this may have to change if the delay is huge and things are timing out quickly. when something times out, increase this. when we get something back, decrease this (maybe)
-  cwnd :: Int
+  timeoutC :: Int -- num timeouts in a row
 } deriving Show
 
 ---- Client Functions
@@ -39,6 +39,12 @@ isDoneSending c = finishing && emptyUnacked && emptyToSend
 stepClient :: Client -> UTCTime -> Maybe Seg -> Maybe String -> Client
 stepClient c now fromServer fromStdin = (sendUnsent (retry (addToUnsent (recAck c fromServer) fromStdin) now) now)
 
+-- updateTimeoutM :: Client -> Client
+-- updateTimeoutM c
+--   | m == 1 &&  = 1
+--   |
+--       where m = (timeoutM c)
+
 isClosed :: Client -> Bool
 isClosed c = (cstate c) == Close
 
@@ -50,9 +56,10 @@ recAck c Nothing = c
 recAck c@(Client Finishing _ _ _ _ _ _ _) (Just (Seg Fin _ _ _)) = c { cstate = Close }
 recAck c (Just (Seg _ num _ _)) = c { unacked = newUnacked,
                                       lastAcked = (max (lastAcked c) num),
-                                      timeoutM = newTimeout }
+                                      --timeoutM = newTimeout,
+                                      timeoutC = 0 }
     where newUnacked = filter (\(s,t) -> (seqNum s) /= num) (unacked c)
-          newTimeout = newTimeoutM Decrease (timeoutM c)
+          --newTimeout = newTimeoutM Decrease (timeoutM c)
 
 sendUnsent :: Client -> UTCTime -> Client
 sendUnsent c now = c { unsent = ((unsent c) \\ sendMe),
@@ -62,23 +69,25 @@ sendUnsent c now = c { unsent = ((unsent c) \\ sendMe),
           sendMe = take toTake (unsent c) -- this may change later depending on cwnd decisions
           withTime = map (\x -> (x,now)) sendMe
 
-data Modify = Increase | Decrease
+-- data Modify = Increase | Decrease
 
-newTimeoutM :: Modify -> Float -> Float
-newTimeoutM _ x = x
+-- newTimeoutM :: Float -> Float
+-- -- newTimeoutM _ x = x
 -- newTimeoutM Increase x = x + 1.0
 -- newTimeoutM Decrease 1 = 1
 -- newTimeoutM Decrease x = x - 1.0
 
   -- unacked is sorted from
 retry :: Client -> UTCTime -> Client
-retry client@(Client _ uacked _ tosend _ _ timeM _) now = client { unacked = update,
-                                                                   toSend = (tosend ++ noTime),
-                                                                   timeoutM = newTimeout }
+retry client@(Client _ uacked _ tosend _ _ timeM _) now =
+    client { unacked = update,
+             toSend = (tosend ++ noTime),
+             timeoutM = newTimeout}
+             --timeoutC = timeC + (length expired)}
     where expired = filter (isExpired timeM now) uacked
           update = map (\segt@(s,_) -> if elem segt expired then (s,now) else segt) uacked
           noTime = map fst expired
-          newTimeout = if 0 == (length expired) then timeM else newTimeoutM Increase timeM
+          newTimeout = if 3 <= (length expired) then timeM * 1.5 else timeM
 
 addToUnsent :: Client -> Maybe String -> Client
 addToUnsent c Nothing = c
@@ -187,7 +196,7 @@ startAndSyn s =
     receiving <- forkIO $ receiveFromServer s fromServer
     -- sending <- forkIO $ sendToServer s toServer
     reading <- forkIO $ readStdin s fromStdin
-    let client = Client Established [] [] [] 0 0 1.0 500
+    let client = Client Established [] [] [] 0 0 1.0 0
     -- send s init
     -- timestamp $ "[send syn] "
     clientLoop client s fromServer fromStdin
