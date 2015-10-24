@@ -59,7 +59,7 @@ splitSegs Nothing = []
 splitSegs (Just s) = map Just $ splitOn packetSplitter s
 
 hashSeg :: Seg -> Seg
-hashSeg s@(Seg a b c _) = s { shash = take 5 $ show $ hash $ (show a) ++ (show b) ++ (show c) }
+hashSeg s@(Seg a b c _) = s { shash = take 3 $ show $ hash $ (show a) ++ (show b) ++ (show c) }
 
 checkCorruption :: Maybe Seg -> Maybe Seg
 checkCorruption Nothing = Nothing -- smells like a Monad goes here!

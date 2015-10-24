@@ -87,7 +87,7 @@ retry client@(Client _ uacked _ tosend _ _ timeM _) now =
     where expired = filter (isExpired timeM now) uacked
           update = map (\segt@(s,_) -> if elem segt expired then (s,now) else segt) uacked
           noTime = map fst expired
-          newTimeout = if 3 <= (length expired) then timeM * 1.5 else timeM
+          newTimeout = if 3 <= (length expired) then timeM + 2.0 else timeM
 
 addToUnsent :: Client -> Maybe String -> Client
 addToUnsent c Nothing = c
@@ -142,7 +142,7 @@ clientLoop c s fromServer fromStdin =
     stdinMessage <- tryGet fromStdin
     now <- getCurrentTime
     let nextClient = stepClient c now (parseSeg serverMessage) stdinMessage
-    sendServer s 5 $ toSend nextClient
+    sendServer s 1 $ toSend nextClient
     let emptiedToSend = nextClient { toSend = [] }
     when (isDoneSending emptiedToSend) $ do
       let fin = hashSeg $ Seg Fin (-1) "" ""
@@ -159,7 +159,7 @@ finishUp c s fromServer =
     now <- getCurrentTime
     let nextClient = stepClient c now (parseSeg serverMessage) Nothing
     unless ((cstate nextClient) == Close) $ do
-      sendServer s 5 $ toSend nextClient
+      sendServer s 1 $ toSend nextClient
       let emptiedToSend = nextClient { toSend = [] }
       finishUp emptiedToSend s fromServer
 
@@ -167,7 +167,7 @@ readStdin :: Socket -> Chan String -> IO ()
 readStdin s fromStdin =
   do
     lines <- getContents
-    mapM (writeChan fromStdin) $ chunksOf 1000 lines
+    mapM (writeChan fromStdin) $ chunksOf 7000 lines
     writeChan fromStdin "#EOF#"
 
     -- line <- getLine
