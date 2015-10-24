@@ -76,13 +76,15 @@ addToUnsent c (Just s)
 
 -- Helpers
 
-sendServer :: Socket -> Seg -> IO ()
-sendServer socket seg =
+sendServer :: Socket -> Int -> [Seg] -> IO ()
+sendServer socket groups segs =
   do
     connected <- isWritable socket
     when connected $ do
     -- splitting should occur
-      send socket $ show seg
+      let sendme = combine groups $ map show segs
+      putStrLn $ show sendme
+      mapM (send socket) $ sendme
       timestamp "[send data] todo"
 
 timestamp :: String -> IO ()
@@ -117,7 +119,7 @@ clientLoop c s fromServer fromStdin =
     stdinMessage <- tryGet fromStdin
     now <- getCurrentTime
     let nextClient = stepClient c now (parseSeg serverMessage) stdinMessage
-    mapM (sendServer s) $ toSend nextClient
+    sendServer s 5 $ toSend nextClient
     let emptiedToSend = nextClient { toSend = [] }
     when (isDoneSending emptiedToSend) $ do
       let fin = hashSeg $ Seg Fin (-1) "" ""
@@ -134,7 +136,7 @@ finishUp c s fromServer =
     now <- getCurrentTime
     let nextClient = stepClient c now (parseSeg serverMessage) Nothing
     unless ((cstate nextClient) == Close) $ do
-      mapM (sendServer s) $ toSend nextClient
+      sendServer s 5 $ toSend nextClient
       let emptiedToSend = nextClient { toSend = [] }
       finishUp emptiedToSend s fromServer
 

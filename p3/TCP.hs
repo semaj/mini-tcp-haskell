@@ -38,6 +38,16 @@ instance Show Seg where
   -- what if space is in the file??
   show (Seg t s a h) = intercalate splitter [(show t), (show s), a, h]
 
+---- Helpers
+
+group2 :: [String] -> [String]
+group2 [] = []
+group2 l@(x:[]) = l
+group2 (x:y:rest) = ((x ++ packetSplitter ++ y):(group2 rest))
+
+combine :: Int -> [String] -> [String]
+combine i s = map (intercalate packetSplitter) $ chunksOf i s
+
 ---- Parsing functions
 
 parseType :: String -> Maybe Type
@@ -48,6 +58,10 @@ parseType _ = Nothing
 
 ---- Segment Functions
 
+splitSegs :: Maybe String -> [Maybe String]
+splitSegs Nothing = []
+splitSegs (Just s) = map Just $ splitOn packetSplitter s
+
 hashSeg :: Seg -> Seg
 hashSeg s@(Seg a b c _) = s { shash = take 5 $ show $ hash $ (show a) ++ (show b) ++ (show c) }
 
@@ -57,7 +71,7 @@ checkCorruption (Just s@(Seg _ _ _ oldhash)) = if oldhash == (shash (hashSeg s))
 
 parseSeg :: Maybe String -> Maybe Seg
 parseSeg Nothing = Nothing
-parseSeg (Just seg) -- = Seg (read (splitUp!!0)) (read (splitUp!!1)) (read (splitUp!!2)) ""
+parseSeg (Just seg)
   | (length splitUp) /= 4 = Nothing
   | (isNothing parsedType) || (isNothing parsedSeq) = Nothing
   | otherwise = checkCorruption $ Just $ Seg (fromJust parsedType)

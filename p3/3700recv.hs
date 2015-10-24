@@ -11,6 +11,7 @@ import Data.List
 import Control.Concurrent
 import Data.Maybe
 import System.Exit
+import Data.List.Split
 
 data SState = SEstablished | SClose deriving (Eq)
 
@@ -60,7 +61,7 @@ timestamp s =
 receiveFromClient :: Socket -> Chan (String, SockAddr) -> IO ()
 receiveFromClient s segs = do
   forever $ do
-    (msg,n,d) <- recvFrom s 1024
+    (msg,_,d) <- recvFrom s 32768
     --timestamp $ "[recv data] " ++ msg
     writeChan segs (msg, d)
 
@@ -82,6 +83,13 @@ initialize conn = do
   let server = Server SEstablished [] [] 0 (SockAddrUnix "unimportantplaceholder")
   handler server receiving conn
 
+sendAck :: Socket -> SockAddr -> Maybe Seg -> IO ()
+sendAck _ _ Nothing = return ()
+sendAck conn sa (Just seg) =
+  do
+    sendTo conn (getAck seg) sa
+    return ()
+
 handler :: Server -> Chan (String, SockAddr) -> Socket -> IO ()
 handler server fromClient conn =
   do
@@ -89,8 +97,8 @@ handler server fromClient conn =
 
     -- gross
     let (fromC,sa) = if (isNothing msg) then (Nothing,(sockaddr server)) else (Just (fst $ fromJust msg),(snd $ fromJust msg))
-    let mSeg = parseSeg fromC
-        nextServer = stepServer server mSeg
+    let mSegs = map parseSeg $ splitSegs fromC
+        nextServer = foldl stepServer server mSegs
 
     when ((sstate nextServer) == SClose) $ do
       mapM putStr $ map dat $ toPrint nextServer
@@ -105,10 +113,6 @@ handler server fromClient conn =
 
     mapM putStr $ map dat $ toPrint nextServer
     let emptiedToPrint = nextServer { toPrint = [], sockaddr = sa }
-    unless (isNothing mSeg) $ do
-      let ack = getAck $ fromJust mSeg
-      -- putStrLn $ show ack
-      sendTo conn ack sa
-      return ()
+    mapM (sendAck conn sa) mSegs
     handler emptiedToPrint fromClient conn
     --unless (null msg) $ sendTo conn "ACK" d >> handler conn
