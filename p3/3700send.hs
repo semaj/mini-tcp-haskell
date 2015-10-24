@@ -43,13 +43,16 @@ isClosed :: Client -> Bool
 isClosed c = (cstate c) == Close
 
 isExpired :: Float -> UTCTime -> (Seg, UTCTime) -> Bool
-isExpired d now (_, old) = (segmentExpiryTime * d) < (realToFrac (abs $ diffUTCTime old now))
+isExpired m now (_, old) = (segmentExpiryTime * m) < (realToFrac (abs $ diffUTCTime old now))
 
 recAck :: Client -> Maybe Seg -> Client
 recAck c Nothing = c
 recAck c@(Client Finishing _ _ _ _ _ _ _) (Just (Seg Fin _ _ _)) = c { cstate = Close }
-recAck c (Just (Seg _ num _ _)) = c { unacked = newUnacked, lastAcked = (max (lastAcked c) num) }
+recAck c (Just (Seg _ num _ _)) = c { unacked = newUnacked,
+                                      lastAcked = (max (lastAcked c) num),
+                                      timeoutM = newTimeout }
     where newUnacked = filter (\(s,t) -> (seqNum s) /= num) (unacked c)
+          newTimeout = newTimeoutM Decrease (timeoutM c)
 
 sendUnsent :: Client -> UTCTime -> Client
 sendUnsent c now = c { unsent = ((unsent c) \\ sendMe),
@@ -59,12 +62,23 @@ sendUnsent c now = c { unsent = ((unsent c) \\ sendMe),
           sendMe = take toTake (unsent c) -- this may change later depending on cwnd decisions
           withTime = map (\x -> (x,now)) sendMe
 
+data Modify = Increase | Decrease
+
+newTimeoutM :: Modify -> Float -> Float
+newTimeoutM _ x = x
+-- newTimeoutM Increase x = x + 1.0
+-- newTimeoutM Decrease 1 = 1
+-- newTimeoutM Decrease x = x - 1.0
+
   -- unacked is sorted from
 retry :: Client -> UTCTime -> Client
-retry client@(Client _ uacked _ tosend _ _ delta _) now = client { unacked = update, toSend = (tosend ++ noTime) }
-    where expired = filter (isExpired delta now) uacked
+retry client@(Client _ uacked _ tosend _ _ timeM _) now = client { unacked = update,
+                                                                   toSend = (tosend ++ noTime),
+                                                                   timeoutM = newTimeout }
+    where expired = filter (isExpired timeM now) uacked
           update = map (\segt@(s,_) -> if elem segt expired then (s,now) else segt) uacked
           noTime = map fst expired
+          newTimeout = if 0 == (length expired) then timeM else newTimeoutM Increase timeM
 
 addToUnsent :: Client -> Maybe String -> Client
 addToUnsent c Nothing = c
@@ -143,16 +157,21 @@ finishUp c s fromServer =
 readStdin :: Socket -> Chan String -> IO ()
 readStdin s fromStdin =
   do
-    line <- getLine
-    eof <- isEOF
-    if eof then do
-      writeChan fromStdin line
-      writeChan fromStdin "#EOF#"
-      else do
-        writeChan fromStdin (line ++ "\n")
-        -- let pieces = chunksOf mss line
-        -- mapM (writeChan fromStdin) pieces
-        readStdin s fromStdin
+    lines <- getContents
+    mapM (writeChan fromStdin) $ chunksOf 1000 lines
+    writeChan fromStdin "#EOF#"
+
+    -- line <- getLine
+    -- eof <- isEOF
+    -- if eof then do
+    --   writeChan fromStdin line
+    --   writeChan fromStdin "#EOF#"
+    --   else do
+    --     -- let lines = chunksOf 2 (line ++ "\n")
+    --     writeChan fromStdin (line ++ "\n")
+    --     -- let pieces = chunksOf mss line
+    --     -- mapM (writeChan fromStdin) pieces
+    --     readStdin s fromStdin
 
 ---- Initialization
 

@@ -10,9 +10,9 @@ import Data.List
 
 splitter = "|"
 packetSplitter = "*"
--- mss = 500
+
 segmentExpiryTime :: Float
-segmentExpiryTime = 0.5 -- sec
+segmentExpiryTime = 1.0 -- sec
 
 ---- Data
 
@@ -39,11 +39,6 @@ instance Show Seg where
   show (Seg t s a h) = intercalate splitter [(show t), (show s), a, h]
 
 ---- Helpers
-
-group2 :: [String] -> [String]
-group2 [] = []
-group2 l@(x:[]) = l
-group2 (x:y:rest) = ((x ++ packetSplitter ++ y):(group2 rest))
 
 combine :: Int -> [String] -> [String]
 combine i s = map (intercalate packetSplitter) $ chunksOf i s
