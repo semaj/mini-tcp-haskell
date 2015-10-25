@@ -113,8 +113,8 @@ handler server fromClient conn =
   do
     msg <- tryGet fromClient
     let (fromC, sockAddr) = maybe (Nothing,(sockaddr server))
-                                       (\(x,y) -> (Just x,y))
-                                       msg
+                                  (\(x,y) -> (Just x,y))
+                                  msg
         mSeg = parseSeg fromC
         -- we update server's state, which may depend on the seg rec'd from client
         nextServer = stepServer server mSeg
