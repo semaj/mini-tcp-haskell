@@ -1,6 +1,6 @@
 module Main where
 import TCP
-import Control.Monad (unless, when, forever)
+import Control.Monad (unless, when, forever, void)
 import System.Exit
 import System.IO
 import Network.Socket
@@ -85,6 +85,7 @@ main =
 initialize :: Socket -> IO ()
 initialize conn = do
   receiving <- newChan
+  -- fork off our socket-reading code
   rec <- forkIO $ receiveFromClient conn receiving
   let server = Server SEstablished [] [] 0 (SockAddrUnix "unimportantplaceholder")
   handler server receiving conn
@@ -93,10 +94,7 @@ initialize conn = do
 
 sendAck :: Socket -> SockAddr -> Maybe Seg -> IO ()
 sendAck _ _ Nothing = return ()
-sendAck conn sa (Just seg) =
-  do
-    sendTo conn (getAck seg) sa
-    return ()
+sendAck conn sa (Just seg) = void $ sendTo conn (getAck seg) sa
 
 printRecv :: Maybe Seg -> Server -> IO ()
 printRecv Nothing _ = timestamp "[recv corrupt packet]"
@@ -114,20 +112,22 @@ handler :: Server -> Chan (String, SockAddr) -> Socket -> IO ()
 handler server fromClient conn =
   do
     msg <- tryGet fromClient
-    -- gross
-    let (fromC, sa) = maybe (Nothing,(sockaddr server)) (\(x,y) -> (Just x,y)) msg
+    let (fromC, sockAddr) = maybe (Nothing,(sockaddr server))
+                                       (\(x,y) -> (Just x,y))
+                                       msg
         mSeg = parseSeg fromC
+        -- we update server's state, which may depend on the seg rec'd from client
         nextServer = stepServer server mSeg
     when (isJust fromC) $ printRecv mSeg server
-    if ((sstate nextServer) == SClose)
-    then do
+    if (sstate nextServer) == SClose
+    then do -- let's finish up
       mapM putStr $ map dat $ toPrint nextServer
       let ack = show $ hashSeg $ Seg Fin (-1) "" ""
-      sendTo conn ack sa
-      sendTo conn ack sa
+      sendTo conn ack sockAddr
+      sendTo conn ack sockAddr
       timestamp $ "[completed]"
-    else do
+    else do -- ack the data packet we received
       mapM putStr $ map dat $ toPrint nextServer
-      let emptiedToPrint = nextServer { toPrint = [], sockaddr = sa }
-      sendAck conn sa mSeg
+      let emptiedToPrint = nextServer { toPrint = [], sockaddr = sockAddr }
+      sendAck conn sockAddr mSeg
       handler emptiedToPrint fromClient conn
