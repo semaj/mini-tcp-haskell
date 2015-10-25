@@ -162,8 +162,9 @@ start s =
     clientLoop client s fromServer fromStdin
     killThread receiving
     killThread reading
+    close s
 
--- Build the socket, run startAndSyn
+-- Build the socket, run start
 
 main :: IO ()
 main = do

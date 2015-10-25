@@ -68,9 +68,7 @@ receiveFromClient :: Socket -> Chan (String, SockAddr) -> IO ()
 receiveFromClient s segs = do
   forever $ do
     (msg,_,d) <- recvFrom s 32768
-    --timestamp $ "[recv data] " ++ msg
     writeChan segs (msg, d)
-
 
 main :: IO ()
 main =
@@ -80,6 +78,8 @@ main =
     r <- getStdRandom $ randomR (1024, 65535)
     let rS = show (r :: Int)
     timestamp $ "[bound] " ++ rS
+    -- the "bracket" pattern (bracket a b c) basically
+    -- runs a first, c in between, finally b (in this case with a socket)
     withSocketsDo $ bracket (connectMe rS) sClose initialize
 
 initialize :: Socket -> IO ()
@@ -115,8 +115,8 @@ handler server fromClient conn =
   do
     msg <- tryGet fromClient
     -- gross
-    let (fromC,sa) = if (isNothing msg) then (Nothing,(sockaddr server)) else (Just (fst $ fromJust msg),(snd $ fromJust msg))
-    let mSeg = parseSeg fromC
+    let (fromC, sa) = maybe (Nothing,(sockaddr server)) (\(x,y) -> (Just x,y)) msg
+        mSeg = parseSeg fromC
         nextServer = stepServer server mSeg
     when (isJust fromC) $ printRecv mSeg server
     if ((sstate nextServer) == SClose)
@@ -125,10 +125,6 @@ handler server fromClient conn =
       let ack = show $ hashSeg $ Seg Fin (-1) "" ""
       sendTo conn ack sa
       sendTo conn ack sa
-      -- sendTo conn ack sa
-      -- sendTo conn ack sa
-      -- sendTo conn ack sa
-      close conn
       timestamp $ "[completed]"
     else do
       mapM putStr $ map dat $ toPrint nextServer
