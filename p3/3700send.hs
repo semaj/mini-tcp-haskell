@@ -1,6 +1,6 @@
 module Main where
 import TCP
-import Control.Monad (unless, forever, when)
+import Control.Monad (unless, forever, when, void)
 import Network.Socket
 import Data.Time
 import Data.Maybe
@@ -39,12 +39,6 @@ isDoneSending c = finishing && emptyUnacked && emptyToSend
 stepClient :: Client -> UTCTime -> Maybe Seg -> Maybe String -> Client
 stepClient c now fromServer fromStdin = (sendUnsent (retry (addToUnsent (recAck c fromServer) fromStdin) now) now)
 
--- updateTimeoutM :: Client -> Client
--- updateTimeoutM c
---   | m == 1 &&  = 1
---   |
---       where m = (timeoutM c)
-
 isClosed :: Client -> Bool
 isClosed c = (cstate c) == Close
 
@@ -56,38 +50,26 @@ recAck c Nothing = c
 recAck c@(Client Finishing _ _ _ _ _ _ _) (Just (Seg Fin _ _ _)) = c { cstate = Close }
 recAck c (Just (Seg _ num _ _)) = c { unacked = newUnacked,
                                       lastAcked = (max (lastAcked c) num),
-                                      --timeoutM = newTimeout,
                                       timeoutC = 0 }
     where newUnacked = filter (\(s,t) -> (seqNum s) /= num) (unacked c)
-          --newTimeout = newTimeoutM Decrease (timeoutM c)
 
 sendUnsent :: Client -> UTCTime -> Client
 sendUnsent c now = c { unsent = ((unsent c) \\ sendMe),
                        unacked = (unacked c) ++ withTime,
                        toSend = (toSend c) ++ sendMe }
-    where toTake = length $ (unsent c) -- length (toSend c)
-          sendMe = take toTake (unsent c) -- this may change later depending on cwnd decisions
+    where toTake = length $ (unsent c)
+          sendMe = take toTake (unsent c)
           withTime = map (\x -> (x,now)) sendMe
 
--- data Modify = Increase | Decrease
-
--- newTimeoutM :: Float -> Float
--- -- newTimeoutM _ x = x
--- newTimeoutM Increase x = x + 1.0
--- newTimeoutM Decrease 1 = 1
--- newTimeoutM Decrease x = x - 1.0
-
-  -- unacked is sorted from
 retry :: Client -> UTCTime -> Client
 retry client@(Client _ uacked _ tosend _ _ timeM _) now =
     client { unacked = update,
              toSend = (tosend ++ noTime),
              timeoutM = newTimeout}
-             --timeoutC = timeC + (length expired)}
     where expired = filter (isExpired timeM now) uacked
           update = map (\segt@(s,_) -> if elem segt expired then (s,now) else segt) uacked
           noTime = map fst expired
-          newTimeout = if 3 <= (length expired) then timeM + 2.0 else timeM
+          newTimeout = if 3 <= (length expired) && timeM < 6 then timeM + 2.0 else timeM
 
 addToUnsent :: Client -> Maybe String -> Client
 addToUnsent c Nothing = c
@@ -99,22 +81,12 @@ addToUnsent c (Just s)
 
 -- Helpers
 
-sendServer :: Socket -> Int -> [Seg] -> IO ()
-sendServer socket groups segs =
+sendServer :: Socket  -> Seg -> IO ()
+sendServer socket seg =
   do
-    connected <- isWritable socket
-    when connected $ do
-    -- splitting should occur
-      let sendme = combine groups $ map show segs
-      putStrLn $ show sendme
-      mapM (send socket) $ sendme
-      timestamp "[send data] todo"
-
-timestamp :: String -> IO ()
-timestamp s =
-  do
-    t <- getCurrentTime
-    hPutStrLn stderr $ "<" ++ (show t) ++ "> " ++ s
+    let (start, len) = offsetLengthSeg seg
+    when ((stype seg) == Data) $ timestamp $ "[send data] " ++ start ++ " (" ++ len ++ ")"
+    void $ send socket $ show seg
 
 getSocket :: String -> String -> IO Socket
 getSocket host port =
@@ -129,11 +101,14 @@ getSocket host port =
 receiveFromServer :: Socket -> Chan String -> IO ()
 receiveFromServer s fromServer = do
   forever $ do
-    connected <- isReadable s
-    unless connected $ exitSuccess
     message <- recv s 1024
-    timestamp "[recv ack] offset goes here"
     writeChan fromServer message
+
+printAck :: Maybe Seg -> IO ()
+printAck Nothing = return ()
+printAck (Just (Seg Fin _ _ _)) = return ()
+printAck (Just s@(Seg Ack num dat _)) = timestamp $ "[recv ack] " ++ end
+    where (end,_) = offsetLengthSeg s
 
 clientLoop :: Client -> Socket -> Chan String -> Chan String -> IO ()
 clientLoop c s fromServer fromStdin =
@@ -141,16 +116,17 @@ clientLoop c s fromServer fromStdin =
     serverMessage <- tryGet fromServer
     stdinMessage <- tryGet fromStdin
     now <- getCurrentTime
-    let nextClient = stepClient c now (parseSeg serverMessage) stdinMessage
-    sendServer s 1 $ toSend nextClient
+    let parsedSeg = parseSeg serverMessage
+        nextClient = stepClient c now parsedSeg stdinMessage
+    printAck parsedSeg
+    mapM (sendServer s) $ toSend nextClient
     let emptiedToSend = nextClient { toSend = [] }
-    when (isDoneSending emptiedToSend) $ do
+    if (isDoneSending emptiedToSend)
+    then do
       let fin = hashSeg $ Seg Fin (-1) "" ""
       finishUp (emptiedToSend { unsent = [fin] }) s fromServer
-      exitSuccess
-    --putStrLn $ show emptiedToSend
-    --when (isClosed emptiedToSend && 0 == (length $ unacked emptiedToSend) $ exitSuccess
-    clientLoop emptiedToSend s fromServer fromStdin
+      timestamp "[completed]"
+    else clientLoop emptiedToSend s fromServer fromStdin
 
 finishUp :: Client -> Socket -> Chan String -> IO ()
 finishUp c s fromServer =
@@ -159,7 +135,7 @@ finishUp c s fromServer =
     now <- getCurrentTime
     let nextClient = stepClient c now (parseSeg serverMessage) Nothing
     unless ((cstate nextClient) == Close) $ do
-      sendServer s 1 $ toSend nextClient
+      mapM (sendServer s) $ toSend nextClient
       let emptiedToSend = nextClient { toSend = [] }
       finishUp emptiedToSend s fromServer
 
@@ -167,39 +143,25 @@ readStdin :: Socket -> Chan String -> IO ()
 readStdin s fromStdin =
   do
     lines <- getContents
-    mapM (writeChan fromStdin) $ chunksOf 7000 lines
+    mapM (writeChan fromStdin) $ chunksOf readInSize lines
     writeChan fromStdin "#EOF#"
-
-    -- line <- getLine
-    -- eof <- isEOF
-    -- if eof then do
-    --   writeChan fromStdin line
-    --   writeChan fromStdin "#EOF#"
-    --   else do
-    --     -- let lines = chunksOf 2 (line ++ "\n")
-    --     writeChan fromStdin (line ++ "\n")
-    --     -- let pieces = chunksOf mss line
-    --     -- mapM (writeChan fromStdin) pieces
-    --     readStdin s fromStdin
 
 ---- Initialization
 
 -- Initial run function. Sends syn (for now),
 -- initiates channels, starts reading/writing loops, starts client loop
 
-startAndSyn :: Socket -> IO ()
-startAndSyn s =
+start :: Socket -> IO ()
+start s =
   do
     fromServer <- newChan
     fromStdin <- newChan
-    -- toServer <- newChan
     receiving <- forkIO $ receiveFromServer s fromServer
-    -- sending <- forkIO $ sendToServer s toServer
     reading <- forkIO $ readStdin s fromStdin
     let client = Client Established [] [] [] 0 0 1.0 0
-    -- send s init
-    -- timestamp $ "[send syn] "
     clientLoop client s fromServer fromStdin
+    killThread receiving
+    killThread reading
 
 -- Build the socket, run startAndSyn
 
@@ -210,4 +172,4 @@ main = do
       splitMe = splitOn ":" (args!!0)
       host = (splitMe!!0)
       port = (splitMe!!1)
-    withSocketsDo $ bracket (getSocket host port) sClose startAndSyn
+    withSocketsDo $ bracket (getSocket host port) sClose start

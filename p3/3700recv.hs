@@ -23,6 +23,18 @@ data Server = Server {
   sockaddr :: SockAddr
 }
 
+isDup :: Server -> Seg -> Bool
+isDup server seg = (seqNum seg) < (lastSeqPrinted server) || any ((== (seqNum seg)) . seqNum) (buffer server)
+
+lastSeqNum :: Server -> Int
+lastSeqNum (Server _ [] [] i _) = i
+lastSeqNum (Server _ toP [] _ _) = last $ sort $ map seqNum toP
+lastSeqNum (Server _ _ buff _ _) = last $ sort $ map seqNum buff
+
+outOfOrder :: Server -> Seg -> String
+outOfOrder server seg = if ((seqNum seg) - 1) == lsn then "(in-order)" else "(out-of-order)"
+    where lsn = lastSeqNum server
+
 whatToPrint :: Server -> Server
 whatToPrint s@(Server ss toprint buff lastseq sa) = newS printMe
     where printMe = find (\x -> (seqNum x) == (lastseq + 1)) buff
@@ -31,9 +43,9 @@ whatToPrint s@(Server ss toprint buff lastseq sa) = newS printMe
 
 addToBuffer :: Server -> Maybe Seg -> Server
 addToBuffer s Nothing = s
-addToBuffer s@(Server _ _ buff _ _) (Just seg@(Seg _ n _ _)) = if (any (\x -> (seqNum x) == n) buff)
-                                                             then s
-                                                             else s { buffer = (buff ++ [seg]) }
+addToBuffer s (Just seg) = if isDup s seg
+                           then s
+                           else s { buffer = ((buffer s) ++ [seg]) }
 
 stepServer :: Server -> Maybe Seg -> Server
 stepServer s (Just (Seg Fin _ _ _)) = s { sstate = SClose }
@@ -51,12 +63,6 @@ connectMe port =
     sock <- socket (addrFamily serveraddr) Datagram defaultProtocol
     bindSocket sock (addrAddress serveraddr)
     return sock
-
-timestamp :: String -> IO ()
-timestamp s =
-  do
-    t <- getCurrentTime
-    hPutStrLn stderr $ "<" ++ (show t) ++ "> " ++ s
 
 receiveFromClient :: Socket -> Chan (String, SockAddr) -> IO ()
 receiveFromClient s segs = do
@@ -79,9 +85,11 @@ main =
 initialize :: Socket -> IO ()
 initialize conn = do
   receiving <- newChan
-  forkIO $ receiveFromClient conn receiving
+  rec <- forkIO $ receiveFromClient conn receiving
   let server = Server SEstablished [] [] 0 (SockAddrUnix "unimportantplaceholder")
   handler server receiving conn
+  killThread rec
+
 
 sendAck :: Socket -> SockAddr -> Maybe Seg -> IO ()
 sendAck _ _ Nothing = return ()
@@ -90,29 +98,40 @@ sendAck conn sa (Just seg) =
     sendTo conn (getAck seg) sa
     return ()
 
+printRecv :: Maybe Seg -> Server -> IO ()
+printRecv Nothing _ = timestamp "[recv corrupt packet]"
+printRecv (Just seg@(Seg Data num dat _)) server =
+  do
+    let (off,len) = offsetLengthSeg seg
+        pref = "[recv data] " ++ off ++ " (" ++ len ++ ") "
+    if (isDup server seg)
+    then timestamp $ pref ++ "IGNORED"
+    else timestamp $ pref ++ "ACCEPTED " ++ (outOfOrder server seg)
+printRecv _ _ = return ()
+
+
 handler :: Server -> Chan (String, SockAddr) -> Socket -> IO ()
 handler server fromClient conn =
   do
     msg <- tryGet fromClient
-
     -- gross
     let (fromC,sa) = if (isNothing msg) then (Nothing,(sockaddr server)) else (Just (fst $ fromJust msg),(snd $ fromJust msg))
-    let mSegs = map parseSeg $ splitSegs fromC
-        nextServer = foldl stepServer server mSegs
-
-    when ((sstate nextServer) == SClose) $ do
+    let mSeg = parseSeg fromC
+        nextServer = stepServer server mSeg
+    when (isJust fromC) $ printRecv mSeg server
+    if ((sstate nextServer) == SClose)
+    then do
       mapM putStr $ map dat $ toPrint nextServer
       let ack = show $ hashSeg $ Seg Fin (-1) "" ""
       sendTo conn ack sa
       sendTo conn ack sa
-      sendTo conn ack sa
-      sendTo conn ack sa
-      sendTo conn ack sa
+      -- sendTo conn ack sa
+      -- sendTo conn ack sa
+      -- sendTo conn ack sa
       close conn
-      exitSuccess
-
-    mapM putStr $ map dat $ toPrint nextServer
-    let emptiedToPrint = nextServer { toPrint = [], sockaddr = sa }
-    mapM (sendAck conn sa) mSegs
-    handler emptiedToPrint fromClient conn
-    --unless (null msg) $ sendTo conn "ACK" d >> handler conn
+      timestamp $ "[completed]"
+    else do
+      mapM putStr $ map dat $ toPrint nextServer
+      let emptiedToPrint = nextServer { toPrint = [], sockaddr = sa }
+      sendAck conn sa mSeg
+      handler emptiedToPrint fromClient conn

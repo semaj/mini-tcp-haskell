@@ -5,15 +5,15 @@ import Data.Time
 import Data.Maybe
 import Data.List.Split
 import Data.List
+import System.IO
 
 ---- Constants
 
 splitter = "|"
-packetSplitter = "*"
-timeoutCThresh = 3
+readInSize = 7000
 
 segmentExpiryTime :: Float
-segmentExpiryTime = 0.8 -- sec
+segmentExpiryTime = 0.5 -- sec
 
 ---- Data
 
@@ -41,8 +41,9 @@ instance Show Seg where
 
 ---- Helpers
 
-combine :: Int -> [String] -> [String]
-combine i s = map (intercalate packetSplitter) $ chunksOf i s
+offsetLengthSeg :: Seg -> (String, String)
+offsetLengthSeg (Seg _ num dat _) = ((show $ (num -1) * readInSize), (show l))
+    where l = length dat
 
 ---- Parsing functions
 
@@ -53,10 +54,6 @@ parseType "2" = Just Fin
 parseType _ = Nothing
 
 ---- Segment Functions
-
-splitSegs :: Maybe String -> [Maybe String]
-splitSegs Nothing = []
-splitSegs (Just s) = map Just $ splitOn packetSplitter s
 
 hashSeg :: Seg -> Seg
 hashSeg s@(Seg a b c _) = s { shash = take 3 $ show $ hash $ (show a) ++ (show b) ++ (show c) }
@@ -95,3 +92,10 @@ tryGet chan = do
   else do
     response <- readChan chan
     return $ Just response
+
+timestamp :: String -> IO ()
+timestamp s =
+  do
+    t <- getCurrentTime
+    hPutStrLn stderr $ "<" ++ (show t) ++ "> " ++ s
+
