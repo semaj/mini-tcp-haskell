@@ -125,6 +125,7 @@ handler server fromClient conn =
       let ack = show $ hashSeg $ Seg Fin (-1) "" ""
       sendTo conn ack sockAddr
       sendTo conn ack sockAddr
+      close conn
       timestamp $ "[completed]"
     else do -- ack the data packet we received
       mapM putStr $ map dat $ toPrint nextServer
