@@ -73,7 +73,7 @@ printRecv Nothing _ = timestamp "[recv corrupt packet]"
 printRecv (Just seg@(Seg Data num dat _)) server =
   do
     let (off,len) = offsetLengthSeg seg
-        pref = "[recv data] " ++ off ++ " (" ++ len ++ ") "
+        pref = "[recv data] " ++ off ++ " (" ++ len ++ ") " ++ (show num)
     if (isDup server seg)
     then timestamp $ pref ++ "IGNORED"
     else timestamp $ pref ++ "ACCEPTED " ++ (outOfOrder server seg)
@@ -81,7 +81,7 @@ printRecv _ _ = return () -- don't print Fins
 
 diff :: Server -> Maybe Seg -> [String]
 diff _ Nothing = []
-diff s (Just seg) = map show $ [(lastSeqPrinted s)..(seqNum seg)] \\ (map seqNum (buffer s))
+diff s (Just seg) = map show $ [((lastSeqPrinted s) + 1)..((seqNum seg) - 1)] \\ (map seqNum (buffer s))
 
 handler :: Server -> Chan (String, SockAddr) -> Socket -> IO ()
 handler server fromClient conn =
@@ -100,7 +100,7 @@ handler server fromClient conn =
       mapM putStr $ map dat $ toPrint nextServer
       let finAck = show $ hashSeg $ Seg Fin (-1) "" ""
       -- send 4 fin acks
-      replicateM_ 4 $ sendTo conn finAck sockAddr
+      -- replicateM_ 4 $ sendTo conn finAck sockAddr
       close conn
       timestamp $ "[completed]"
     else do -- ack the data packet we received

@@ -92,7 +92,7 @@ sendServer :: Socket  -> Seg -> IO ()
 sendServer socket seg =
   do
     let (start, len) = offsetLengthSeg seg
-    when ((stype seg) == Data) $ timestamp $ "[send data] " ++ start ++ " (" ++ len ++ ")"
+    when ((stype seg) == Data) $ timestamp $ "[send data] " ++ start ++ " (" ++ len ++ ") " ++ (show $ seqNum seg)
     void $ send socket $ show seg
 
 getSocket :: String -> String -> IO Socket
@@ -106,7 +106,7 @@ getSocket host port =
 printAck :: Maybe Seg -> IO ()
 printAck Nothing = return ()
 printAck (Just (Seg Fin _ _ _)) = return ()
-printAck (Just s@(Seg Ack num dat _)) = timestamp $ "[recv ack] " ++ end
+printAck (Just s@(Seg Ack num dat _)) = timestamp $ "[recv ack] " ++ dat
   where (end,_) = offsetLengthSeg s
 
 -- Forked IO functions, continuously running
@@ -146,8 +146,11 @@ finishUp c s fromServer =
     let nextClient = stepClient c now (parseSeg serverMessage) Nothing
     unless ((cstate nextClient) == Close) $ do
       mapM (sendServer s) $ toSend nextClient
+      mapM (sendServer s) $ toSend nextClient
+      mapM (sendServer s) $ toSend nextClient
       let emptiedToSend = nextClient { toSend = [] }
-      finishUp emptiedToSend s fromServer
+      close s
+      --finishUp emptiedToSend s fromServer
 
 readStdin :: Socket -> Chan String -> IO ()
 readStdin s fromStdin =
@@ -174,7 +177,7 @@ start s =
     -- read from server/stdin concurrently, push to above channels
     receiving <- forkIO $ receiveFromServer s fromServer
     reading <- forkIO $ readStdin s fromStdin
-    let client = Client Established [] [] [] 0 0 1.5 1000000
+    let client = Client Established [] [] [] 0 0 2.0 1000000
     clientLoop client s fromServer fromStdin
     -- stop the reading threads
     killThread receiving
