@@ -1,7 +1,7 @@
 main : configure recv send
 
 configure :
-	cabal install network hashable split random
+	cabal update && cabal install network hashable split random
 
 recv :
 	ghc 3700recv.hs

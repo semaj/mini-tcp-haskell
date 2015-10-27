@@ -12,8 +12,8 @@ import System.IO
 splitter = "|"
 readInSize = 10000
 
-segmentExpiryTime :: Float
-segmentExpiryTime = 2.0 -- sec
+-- segmentExpiryTime :: Float
+-- segmentExpiryTime = 2.0 -- sec
 
 ---- Data
 

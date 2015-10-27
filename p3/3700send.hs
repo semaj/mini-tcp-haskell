@@ -24,8 +24,8 @@ data Client = Client {
   toSend :: [Seg],
   lastRead :: Int, -- last seq number read from stdin
   lastAcked :: Int, -- last seq num acked. if delta between this and any unacked packets is high, just resend those packets (or decrease the timeout)
-  timeoutM :: Float, --
-  timeoutC :: Int -- num timeouts in a row
+  timeout :: Float, --
+  window :: Int
 } deriving Show
 
 ---- Client Functions
@@ -43,33 +43,33 @@ isClosed :: Client -> Bool
 isClosed c = (cstate c) == Close
 
 isExpired :: Float -> UTCTime -> (Seg, UTCTime) -> Bool
-isExpired m now (_, old) = (segmentExpiryTime * m) < (realToFrac (abs $ diffUTCTime old now))
+isExpired timeout now (_, old) = timeout < (realToFrac (abs $ diffUTCTime old now))
 
 recAck :: Maybe Seg -> Client -> Client
 recAck Nothing c = c
 recAck (Just (Seg Fin _ _ _)) c@(Client Finishing _ _ _ _ _ _ _) = c { cstate = Close }
 recAck (Just (Seg _ num _ _)) c = c { unacked = newUnacked,
-                                      lastAcked = (max (lastAcked c) num),
-                                      timeoutC = 0 }
+                                      lastAcked = (max (lastAcked c) num) }
     where newUnacked = filter (\(s,t) -> (seqNum s) /= num) (unacked c)
 
 sendUnsent :: UTCTime -> Client -> Client
 sendUnsent now c = c { unsent = ((unsent c) \\ sendMe),
                        unacked = (unacked c) ++ withTime,
                        toSend = (toSend c) ++ sendMe }
-    where toTake = length $ (unsent c)
+    where toTake = (window c) --length $ (unsent c)
           sendMe = take toTake (unsent c)
           withTime = map (\ x -> (x,now)) sendMe
 
 retry :: UTCTime -> Client -> Client
-retry now client@(Client _ uacked _ tosend _ _ timeM _) =
+--retry now client@(Client _ uacked _ [] _ _ _) = client { toSend = uacked }
+retry now client@(Client _ uacked _ tosend _ _ timeOut _) =
     client { unacked = update,
              toSend = (tosend ++ noTime),
-             timeoutM = newTimeout}
-    where expired = filter (isExpired timeM now) uacked
+             timeout = newTimeout}
+    where expired = filter (isExpired timeOut now) uacked
           update = map (\ segt@(s,_) -> if elem segt expired then (s,now) else segt) uacked
           noTime = map fst expired
-          newTimeout =(timeoutM client) -- if 3 <= (length expired) && timeM < 6 then timeM + 2.0 else timeM
+          newTimeout = timeOut -- if timeOut >= 1.0 then timeOut / 2.0 else timeOut -- if 3 <= (length expired) && timeM < 6 then timeM + 2.0 else timeM
 
 addToUnsent :: Maybe String -> Client  -> Client
 addToUnsent Nothing c = c
@@ -113,12 +113,14 @@ receiveFromServer s fromServer = do
 clientLoop :: Client -> Socket -> Chan String -> Chan String -> IO ()
 clientLoop c s fromServer fromStdin =
   do
+    -- get Maybe String from server/stdin. If nothing to read -> Nothing
     serverMessage <- tryGet fromServer
     stdinMessage <- tryGet fromStdin
     now <- getCurrentTime
     let parsedSeg = parseSeg serverMessage
         nextClient = stepClient c now parsedSeg stdinMessage
     printAck parsedSeg
+    -- send to server concurrently
     forkIO $ void $ mapM (sendServer s) $ toSend nextClient
     let emptiedToSend = nextClient { toSend = [] }
     if (isDoneSending emptiedToSend)
@@ -142,24 +144,31 @@ finishUp c s fromServer =
 readStdin :: Socket -> Chan String -> IO ()
 readStdin s fromStdin =
   do
+    -- lazy languages ftw.
+    -- gets entire STDIN as a lazy string - map it into chunks
+    -- and write it to our channel
     lines <- getContents
     mapM (writeChan fromStdin) $ chunksOf readInSize lines
+    -- this EOF flag is for client use only
     writeChan fromStdin "#EOF#"
 
 ---- Initialization
 
--- Initial run function. Sends syn (for now),
+-- Initial run function.
 -- initiates channels, starts reading/writing loops, starts client loop
 
 start :: Socket -> IO ()
 start s =
   do
+    -- concurrent channels (Go-like)
     fromServer <- newChan
     fromStdin <- newChan
+    -- read from server/stdin concurrently, push to above channels
     receiving <- forkIO $ receiveFromServer s fromServer
     reading <- forkIO $ readStdin s fromStdin
-    let client = Client Established [] [] [] 0 0 1.0 0
+    let client = Client Established [] [] [] 0 0 2.0 1000000
     clientLoop client s fromServer fromStdin
+    -- stop the reading threads
     killThread receiving
     killThread reading
     close s
