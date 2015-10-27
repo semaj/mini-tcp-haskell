@@ -118,7 +118,7 @@ handler server fromClient conn =
         mSeg = parseSeg fromC
         -- we update server's state, which may depend on the seg rec'd from client
         nextServer = stepServer server mSeg
-    when (isJust fromC) $ printRecv mSeg server
+    when (isJust fromC) $ void $ forkIO $ void $ printRecv mSeg server
     if (sstate nextServer) == SClose
     then do -- let's finish up
       mapM putStr $ map dat $ toPrint nextServer
@@ -132,5 +132,5 @@ handler server fromClient conn =
     else do -- ack the data packet we received
       mapM putStr $ map dat $ toPrint nextServer
       let emptiedToPrint = nextServer { toPrint = [], sockaddr = sockAddr }
-      sendAck conn sockAddr mSeg
+      forkIO $ sendAck conn sockAddr mSeg
       handler emptiedToPrint fromClient conn

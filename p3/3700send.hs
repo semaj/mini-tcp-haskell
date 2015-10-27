@@ -24,7 +24,7 @@ data Client = Client {
   toSend :: [Seg],
   lastRead :: Int, -- last seq number read from stdin
   lastAcked :: Int, -- last seq num acked. if delta between this and any unacked packets is high, just resend those packets (or decrease the timeout)
-  timeoutM :: Float, -- modifier (multiplicative) (how long to wait before something times out), this may have to change if the delay is huge and things are timing out quickly. when something times out, increase this. when we get something back, decrease this (maybe)
+  timeoutM :: Float, --
   timeoutC :: Int -- num timeouts in a row
 } deriving Show
 
@@ -37,7 +37,7 @@ isDoneSending c = finishing && emptyUnacked && emptyToSend
         finishing = (cstate c) == Finishing
 
 stepClient :: Client -> UTCTime -> Maybe Seg -> Maybe String -> Client
-stepClient c now fromServer fromStdin = (sendUnsent (retry (addToUnsent (recAck c fromServer) fromStdin) now) now)
+stepClient c now fromServer fromStdin = sendUnsent now $ retry now $ addToUnsent fromStdin $ recAck fromServer c
 
 isClosed :: Client -> Bool
 isClosed c = (cstate c) == Close
@@ -45,35 +45,35 @@ isClosed c = (cstate c) == Close
 isExpired :: Float -> UTCTime -> (Seg, UTCTime) -> Bool
 isExpired m now (_, old) = (segmentExpiryTime * m) < (realToFrac (abs $ diffUTCTime old now))
 
-recAck :: Client -> Maybe Seg -> Client
-recAck c Nothing = c
-recAck c@(Client Finishing _ _ _ _ _ _ _) (Just (Seg Fin _ _ _)) = c { cstate = Close }
-recAck c (Just (Seg _ num _ _)) = c { unacked = newUnacked,
+recAck :: Maybe Seg -> Client -> Client
+recAck Nothing c = c
+recAck (Just (Seg Fin _ _ _)) c@(Client Finishing _ _ _ _ _ _ _) = c { cstate = Close }
+recAck (Just (Seg _ num _ _)) c = c { unacked = newUnacked,
                                       lastAcked = (max (lastAcked c) num),
                                       timeoutC = 0 }
     where newUnacked = filter (\(s,t) -> (seqNum s) /= num) (unacked c)
 
-sendUnsent :: Client -> UTCTime -> Client
-sendUnsent c now = c { unsent = ((unsent c) \\ sendMe),
+sendUnsent :: UTCTime -> Client -> Client
+sendUnsent now c = c { unsent = ((unsent c) \\ sendMe),
                        unacked = (unacked c) ++ withTime,
                        toSend = (toSend c) ++ sendMe }
     where toTake = length $ (unsent c)
           sendMe = take toTake (unsent c)
-          withTime = map (\x -> (x,now)) sendMe
+          withTime = map (\ x -> (x,now)) sendMe
 
-retry :: Client -> UTCTime -> Client
-retry client@(Client _ uacked _ tosend _ _ timeM _) now =
+retry :: UTCTime -> Client -> Client
+retry now client@(Client _ uacked _ tosend _ _ timeM _) =
     client { unacked = update,
              toSend = (tosend ++ noTime),
              timeoutM = newTimeout}
     where expired = filter (isExpired timeM now) uacked
-          update = map (\segt@(s,_) -> if elem segt expired then (s,now) else segt) uacked
+          update = map (\ segt@(s,_) -> if elem segt expired then (s,now) else segt) uacked
           noTime = map fst expired
-          newTimeout = if 3 <= (length expired) && timeM < 6 then timeM + 2.0 else timeM
+          newTimeout =(timeoutM client) -- if 3 <= (length expired) && timeM < 6 then timeM + 2.0 else timeM
 
-addToUnsent :: Client -> Maybe String -> Client
-addToUnsent c Nothing = c
-addToUnsent c (Just s)
+addToUnsent :: Maybe String -> Client  -> Client
+addToUnsent Nothing c = c
+addToUnsent (Just s) c
   | s == "#EOF#" = c { cstate = Finishing }
   | otherwise = c { unsent = (unsent c) ++ [newSeg], lastRead = newlastread }
       where newlastread = (lastRead c) + 1
@@ -96,6 +96,12 @@ getSocket host port =
     connect s (addrAddress serveraddr)
     return s
 
+printAck :: Maybe Seg -> IO ()
+printAck Nothing = return ()
+printAck (Just (Seg Fin _ _ _)) = return ()
+printAck (Just s@(Seg Ack num dat _)) = timestamp $ "[recv ack] " ++ end
+  where (end,_) = offsetLengthSeg s
+
 -- Forked IO functions, continuously running
 
 receiveFromServer :: Socket -> Chan String -> IO ()
@@ -103,12 +109,6 @@ receiveFromServer s fromServer = do
   forever $ do
     message <- recv s 1024
     writeChan fromServer message
-
-printAck :: Maybe Seg -> IO ()
-printAck Nothing = return ()
-printAck (Just (Seg Fin _ _ _)) = return ()
-printAck (Just s@(Seg Ack num dat _)) = timestamp $ "[recv ack] " ++ end
-    where (end,_) = offsetLengthSeg s
 
 clientLoop :: Client -> Socket -> Chan String -> Chan String -> IO ()
 clientLoop c s fromServer fromStdin =
@@ -119,7 +119,7 @@ clientLoop c s fromServer fromStdin =
     let parsedSeg = parseSeg serverMessage
         nextClient = stepClient c now parsedSeg stdinMessage
     printAck parsedSeg
-    mapM (sendServer s) $ toSend nextClient
+    forkIO $ void $ mapM (sendServer s) $ toSend nextClient
     let emptiedToSend = nextClient { toSend = [] }
     if (isDoneSending emptiedToSend)
     then do

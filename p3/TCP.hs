@@ -10,7 +10,7 @@ import System.IO
 ---- Constants
 
 splitter = "|"
-readInSize = 7000
+readInSize = 10000
 
 segmentExpiryTime :: Float
 segmentExpiryTime = 2.0 -- sec
