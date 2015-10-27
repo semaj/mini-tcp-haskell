@@ -13,7 +13,7 @@ splitter = "|"
 readInSize = 7000
 
 segmentExpiryTime :: Float
-segmentExpiryTime = 0.8 -- sec
+segmentExpiryTime = 2.0 -- sec
 
 ---- Data
 

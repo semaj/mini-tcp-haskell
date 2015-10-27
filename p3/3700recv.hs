@@ -37,7 +37,7 @@ outOfOrder server seg = if ((seqNum seg) - 1) == lsn then "(in-order)" else "(ou
 
 whatToPrint :: Server -> Server
 whatToPrint s@(Server ss toprint buff lastseq sa) = newS printMe
-    where printMe = find (\x -> (seqNum x) == (lastseq + 1)) buff
+    where printMe = find (\ x -> (seqNum x) == (lastseq + 1)) buff
           newS Nothing = s
           newS (Just a) = whatToPrint $ Server ss (toprint ++ [a]) (delete a buff) (lastseq + 1) sa
 
@@ -113,7 +113,7 @@ handler server fromClient conn =
   do
     msg <- tryGet fromClient
     let (fromC, sockAddr) = maybe (Nothing,(sockaddr server))
-                                  (\(x,y) -> (Just x,y))
+                                  (\ (x,y) -> (Just x,y))
                                   msg
         mSeg = parseSeg fromC
         -- we update server's state, which may depend on the seg rec'd from client
@@ -123,6 +123,8 @@ handler server fromClient conn =
     then do -- let's finish up
       mapM putStr $ map dat $ toPrint nextServer
       let ack = show $ hashSeg $ Seg Fin (-1) "" ""
+      sendTo conn ack sockAddr
+      sendTo conn ack sockAddr
       sendTo conn ack sockAddr
       sendTo conn ack sockAddr
       close conn
