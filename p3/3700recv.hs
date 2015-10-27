@@ -55,8 +55,8 @@ stepServer :: Server -> Maybe Seg -> Server
 stepServer s (Just (Seg Fin _ _ _)) = s { sstate = SClose }
 stepServer s mseg = whatToPrint $ addToBuffer s mseg
 
-getAck :: Seg -> String
-getAck (Seg _ num _ _) = show $ hashSeg $ Seg Ack num "" ""
+getAck :: Seg -> [String] -> String
+getAck (Seg _ num _ _) nacks = show $ hashSeg $ Seg Ack num (intercalate nackSplitter nacks) ""
 
 receiveFromClient :: Socket -> Chan (String, SockAddr) -> IO ()
 receiveFromClient s segs = do
@@ -64,9 +64,9 @@ receiveFromClient s segs = do
     (msg,_,d) <- recvFrom s 32768
     writeChan segs (msg, d)
 
-sendAck :: Socket -> SockAddr -> Maybe Seg -> IO ()
-sendAck _ _ Nothing = return ()
-sendAck conn sa (Just seg) = void $ sendTo conn (getAck seg) sa
+sendAck :: Socket -> SockAddr -> Maybe Seg -> [String] -> IO ()
+sendAck _ _ Nothing _ = return ()
+sendAck conn sa (Just seg) nacks = void $ sendTo conn (getAck seg nacks) sa
 
 printRecv :: Maybe Seg -> Server -> IO ()
 printRecv Nothing _ = timestamp "[recv corrupt packet]"
@@ -79,6 +79,9 @@ printRecv (Just seg@(Seg Data num dat _)) server =
     else timestamp $ pref ++ "ACCEPTED " ++ (outOfOrder server seg)
 printRecv _ _ = return () -- don't print Fins
 
+diff :: Server -> Maybe Seg -> [String]
+diff _ Nothing = []
+diff s (Just seg) = map show $ [(lastSeqPrinted s)..(seqNum seg)] \\ (map seqNum (buffer s))
 
 handler :: Server -> Chan (String, SockAddr) -> Socket -> IO ()
 handler server fromClient conn =
@@ -103,7 +106,7 @@ handler server fromClient conn =
     else do -- ack the data packet we received
       mapM putStr $ map dat $ toPrint nextServer
       let emptiedToPrint = nextServer { toPrint = [], sockaddr = sockAddr }
-      forkIO $ sendAck conn sockAddr mSeg
+      forkIO $ sendAck conn sockAddr mSeg $ diff nextServer mSeg -- (map (show . seqNum) $ buffer nextServer)
       handler emptiedToPrint fromClient conn
 
 initialize :: Socket -> IO ()

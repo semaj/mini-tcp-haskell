@@ -10,10 +10,8 @@ import System.IO
 ---- Constants
 
 splitter = "|"
+nackSplitter = ","
 readInSize = 10000
-
--- segmentExpiryTime :: Float
--- segmentExpiryTime = 2.0 -- sec
 
 ---- Data
 
@@ -35,8 +33,8 @@ data Seg = Seg {
 instance Eq Seg where
   (==) (Seg a b c d) (Seg e f g h) = a == e && b == f && c == g && d == h
 
+-- essentially to string
 instance Show Seg where
-  -- what if space is in the file??
   show (Seg t s a h) = intercalate splitter [(show t), (show s), a, h]
 
 ---- Helpers
@@ -62,6 +60,11 @@ checkCorruption :: Maybe Seg -> Maybe Seg
 checkCorruption Nothing = Nothing -- smells like a Monad goes here!
 checkCorruption (Just s@(Seg _ _ _ oldhash)) = if oldhash == (shash (hashSeg s)) then Just s else Nothing
 
+parseNacks :: Seg -> [Int]
+parseNacks (Seg Ack _ nacks _) = catMaybes $ ((map readMaybe $ splitOn nackSplitter nacks) :: [Maybe Int])
+parseNacks _ = []
+
+-- look for corruption
 parseSeg :: Maybe String -> Maybe Seg
 parseSeg Nothing = Nothing
 parseSeg (Just seg)
@@ -84,6 +87,7 @@ readMaybe s = case reads s of
                   [(val, "")] -> Just val
                   _           -> Nothing
 
+-- Return nothing if there's nothing to read
 tryGet :: Chan a -> IO (Maybe a)
 tryGet chan = do
   empty <- isEmptyChan chan

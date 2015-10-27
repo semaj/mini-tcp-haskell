@@ -25,7 +25,7 @@ data Client = Client {
   lastRead :: Int, -- last seq number read from stdin
   lastAcked :: Int, -- last seq num acked. if delta between this and any unacked packets is high, just resend those packets (or decrease the timeout)
   timeout :: Float, --
-  window :: Int
+  window :: Int -- unused
 } deriving Show
 
 ---- Client Functions
@@ -37,7 +37,7 @@ isDoneSending c = finishing && emptyUnacked && emptyToSend
         finishing = (cstate c) == Finishing
 
 stepClient :: Client -> UTCTime -> Maybe Seg -> Maybe String -> Client
-stepClient c now fromServer fromStdin = sendUnsent now $ retry now $ addToUnsent fromStdin $ recAck fromServer c
+stepClient c now fromServer fromStdin = sendUnsent now $ retry now $ addToUnsent fromStdin $ recAck fromServer now c
 
 isClosed :: Client -> Bool
 isClosed c = (cstate c) == Close
@@ -45,12 +45,19 @@ isClosed c = (cstate c) == Close
 isExpired :: Float -> UTCTime -> (Seg, UTCTime) -> Bool
 isExpired timeout now (_, old) = timeout < (realToFrac (abs $ diffUTCTime old now))
 
-recAck :: Maybe Seg -> Client -> Client
-recAck Nothing c = c
-recAck (Just (Seg Fin _ _ _)) c@(Client Finishing _ _ _ _ _ _ _) = c { cstate = Close }
-recAck (Just (Seg _ num _ _)) c = c { unacked = newUnacked,
-                                      lastAcked = (max (lastAcked c) num) }
+-- parse nacks and immediately send those
+recAck :: Maybe Seg -> UTCTime -> Client -> Client
+recAck Nothing _ c = c
+recAck (Just (Seg Fin _ _ _)) _ c@(Client Finishing _ _ _ _ _ _ _) = c { cstate = Close }
+recAck (Just s@(Seg _ num _ _)) now c = c { unacked = update,
+                                            lastAcked = (max (lastAcked c) num),
+                                            toSend = (toSend c) ++ withoutTime }
     where newUnacked = filter (\(s,t) -> (seqNum s) /= num) (unacked c)
+          nacks = parseNacks s
+          nacked = filter (\ (ss,_) -> elem (seqNum ss) nacks) newUnacked
+          update = map (\ segt@(ss,_) -> if elem segt nacked then (ss,now) else segt) newUnacked
+          withoutTime = map fst nacked
+
 
 sendUnsent :: UTCTime -> Client -> Client
 sendUnsent now c = c { unsent = ((unsent c) \\ sendMe),
@@ -69,7 +76,7 @@ retry now client@(Client _ uacked _ tosend _ _ timeOut _) =
     where expired = filter (isExpired timeOut now) uacked
           update = map (\ segt@(s,_) -> if elem segt expired then (s,now) else segt) uacked
           noTime = map fst expired
-          newTimeout = timeOut -- if timeOut >= 1.0 then timeOut / 2.0 else timeOut -- if 3 <= (length expired) && timeM < 6 then timeM + 2.0 else timeM
+          newTimeout = timeOut
 
 addToUnsent :: Maybe String -> Client  -> Client
 addToUnsent Nothing c = c
@@ -120,8 +127,9 @@ clientLoop c s fromServer fromStdin =
     let parsedSeg = parseSeg serverMessage
         nextClient = stepClient c now parsedSeg stdinMessage
     printAck parsedSeg
+    --putStrLn $ show $ map (seqNum . fst) $ unacked nextClient
     -- send to server concurrently
-    forkIO $ void $ mapM (sendServer s) $ toSend nextClient
+    forkIO $ void $ mapM (sendServer s) $ nub $ toSend nextClient
     let emptiedToSend = nextClient { toSend = [] }
     if (isDoneSending emptiedToSend)
     then do
@@ -166,7 +174,7 @@ start s =
     -- read from server/stdin concurrently, push to above channels
     receiving <- forkIO $ receiveFromServer s fromServer
     reading <- forkIO $ readStdin s fromStdin
-    let client = Client Established [] [] [] 0 0 2.0 1000000
+    let client = Client Established [] [] [] 0 0 1.5 1000000
     clientLoop client s fromServer fromStdin
     -- stop the reading threads
     killThread receiving
