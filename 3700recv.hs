@@ -16,13 +16,15 @@ import Data.List.Split
 data SState = SEstablished | SClose deriving (Eq)
 
 data Server = Server {
-  sstate :: SState,
-  toPrint :: [Seg],
-  buffer :: [Seg],
-  lastSeqPrinted :: Int,
-  sockaddr :: SockAddr
+  sstate :: SState,      -- server state
+  toPrint :: [Seg],      -- what to print on next IO cycle
+  buffer :: [Seg],       -- stored segments (can't print because they're out of order)
+  lastSeqPrinted :: Int, -- last sequence number printed
+  sockaddr :: SockAddr   
 }
 
+-- it's a duplicate if it's smaller than the last thing we printed (already printed)
+-- or if we have it in the buffer
 isDup :: Server -> Seg -> Bool
 isDup server seg = (seqNum seg) < (lastSeqPrinted server) || any ((== (seqNum seg)) . seqNum) (buffer server)
 
@@ -42,6 +44,7 @@ whatToPrint :: Server -> Server
 whatToPrint s@(Server ss toprint buff lastseq sa) = newS printMe
     where printMe = find ((== (lastseq + 1)) . seqNum) buff
           newS Nothing = s
+          -- this is pretty gross, there's a fold here somewhere
           newS (Just a) = whatToPrint $ Server ss (toprint ++ [a]) (delete a buff) (lastseq + 1) sa
 
 -- if it's a dup, don't add it
@@ -52,9 +55,12 @@ addToBuffer s (Just seg) = if isDup s seg
                            else s { buffer = ((buffer s) ++ [seg]) }
 
 stepServer :: Server -> Maybe Seg -> Server
+-- if we receive a fin, let's finish up
 stepServer s (Just (Seg Fin _ _ _)) = s { sstate = SClose }
+-- else let's add to the buffer and add things to be printed
 stepServer s mseg = whatToPrint $ addToBuffer s mseg
 
+-- add our nacks to the Ack data
 getAck :: Seg -> [String] -> String
 getAck (Seg _ num _ _) nacks = show $ hashSeg $ Seg Ack num (intercalate nackSplitter nacks) ""
 
@@ -81,6 +87,8 @@ printRecv _ _ = return () -- don't print Fins
 
 diff :: Server -> Maybe Seg -> [String]
 diff _ Nothing = []
+-- in the range from what we've printed to what we've received, what are we missing?
+-- (what should we nack?)
 diff s (Just seg) = map show $ [((lastSeqPrinted s) + 1)..((seqNum seg) - 1)] \\ (map seqNum (buffer s))
 
 handler :: Server -> Chan (String, SockAddr) -> Socket -> IO ()
@@ -100,13 +108,15 @@ handler server fromClient conn =
       mapM putStr $ map dat $ toPrint nextServer
       let finAck = show $ hashSeg $ Seg Fin (-1) "" ""
       -- send 4 fin acks
-      -- replicateM_ 4 $ sendTo conn finAck sockAddr
+      replicateM_ 4 $ sendTo conn finAck sockAddr
       close conn
       timestamp $ "[completed]"
     else do -- ack the data packet we received
+      -- print everything
       mapM putStr $ map dat $ toPrint nextServer
       let emptiedToPrint = nextServer { toPrint = [], sockaddr = sockAddr }
-      forkIO $ sendAck conn sockAddr mSeg $ diff nextServer mSeg -- (map (show . seqNum) $ buffer nextServer)
+      -- sends ack to the server
+      forkIO $ sendAck conn sockAddr mSeg $ diff nextServer mSeg 
       handler emptiedToPrint fromClient conn
 
 initialize :: Socket -> IO ()
